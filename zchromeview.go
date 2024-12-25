@@ -210,10 +210,11 @@ func (z *ZChromeView) sendEventLoop() {
 
 	defer z.wsConn.Close()
 
-	err := z.wsConn.WriteJSON(map[string]interface{}{
-		"id":     z.msgId(),
-		"method": "Target.getTargets",
+	err := z.wsConn.WriteJSON(&IPCMessage{
+		ID:     z.msgId(),
+		Method: "Target.getTargets",
 	})
+
 	if err != nil {
 		slog.Error("failed to write message", "err", err)
 		return
@@ -248,20 +249,20 @@ func (z *ZChromeView) sendEventLoop() {
 		panic("no page target found")
 	}
 
-	z.wsConn.WriteJSON(map[string]interface{}{
-		"id":     z.msgId(),
-		"method": "Target.activateTarget",
-		"params": map[string]interface{}{
+	z.wsConn.WriteJSON(&IPCMessage{
+		ID:     z.msgId(),
+		Method: "Target.activateTarget",
+		Params: map[string]interface{}{
 			"targetId": pageTarget.TargetId,
 		},
 	})
 
 	// attachToTarget
 
-	z.wsConn.WriteJSON(map[string]interface{}{
-		"id":     z.msgId(),
-		"method": "Target.attachToTarget",
-		"params": map[string]interface{}{
+	z.wsConn.WriteJSON(&IPCMessage{
+		ID:     z.msgId(),
+		Method: "Target.attachToTarget",
+		Params: map[string]interface{}{
 			"targetId": pageTarget.TargetId,
 			"flatten":  true,
 		},
