@@ -62,7 +62,7 @@ func New(opts Options) *ZChromeView {
 	} else if opts.StateMode == StateModeLocalFolder {
 		// working directory
 		dir, _ := os.Getwd()
-		profile = fmt.Sprintf("%s/.zchromeview", dir)
+		profile = path.Join(dir, ".zchromeview")
 
 	} else if opts.StateMode == StateModeCustomFolder {
 		profile = opts.StatePath
