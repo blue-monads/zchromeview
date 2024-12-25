@@ -12,9 +12,10 @@ type View interface {
 }
 
 type IPCMessage struct {
-	ID     int64  `json:"id"`
-	Method string `json:"method"`
-	Params any    `json:"params"`
+	ID        int64  `json:"id"`
+	Method    string `json:"method"`
+	Params    any    `json:"params"`
+	SessionId string `json:"sessionId"`
 }
 
 func defaultBinaryPath() string {
@@ -75,4 +76,17 @@ func defaultBinaryPath() string {
 	}
 
 	return defaultBinaryPath
+}
+
+// Chrome Driver types
+
+type TargetInfo struct {
+	Attached             bool   `json:"attached"`
+	BrowserContextId     string `json:"browserContextId"`
+	CanAccessOpener      bool   `json:"canAccessOpener"`
+	Title                string `json:"title"`
+	TargetId             string `json:"targetId"`
+	Type                 string `json:"type"`
+	URL                  string `json:"url"`
+	WebSocketDebuggerUrl string `json:"webSocketDebuggerUrl"`
 }

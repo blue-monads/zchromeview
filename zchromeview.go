@@ -2,9 +2,7 @@ package zchromeview
 
 import (
 	"bufio"
-	"encoding/json"
 	"fmt"
-	"io"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -14,6 +12,7 @@ import (
 
 	"github.com/adrg/xdg"
 	"github.com/gorilla/websocket"
+	"github.com/k0kubun/pp"
 )
 
 const (
@@ -43,6 +42,7 @@ type ZChromeView struct {
 	cmd         *exec.Cmd
 
 	msgIdCounter int64
+	sessionId    string
 }
 
 func New(opts Options) *ZChromeView {
@@ -76,7 +76,7 @@ func New(opts Options) *ZChromeView {
 		debuggerURL:  "",
 		wsConn:       nil,
 		msgChan:      make(chan *IPCMessage, 2),
-		msgIdCounter: 0,
+		msgIdCounter: 1,
 	}
 }
 
@@ -95,14 +95,12 @@ func (z *ZChromeView) Start() error {
 	cmd := exec.Command(z.opts.PathToBinary, args...)
 	z.cmd = cmd
 
+	cmd.Stdout = os.Stdout
+
 	// Capture stdout and stderr
-	stdout, err := cmd.StdoutPipe()
-	if err != nil {
-		return fmt.Errorf("failed to create stdout pipe: %v", err)
-	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		return fmt.Errorf("failed to create stderr pipe: %v", err)
+		return fmt.Errorf("failed to create stdout pipe: %v", err)
 	}
 
 	slog.Info("before start")
@@ -112,44 +110,29 @@ func (z *ZChromeView) Start() error {
 		return fmt.Errorf("failed to start chrome: %v", err)
 	}
 
-	wsURLChan := make(chan string, 1)
-	errChan := make(chan error, 1)
-	timer := time.NewTimer(10 * time.Second)
+	buf := bufio.NewReader(stderr)
+	for {
+		line, _, err := buf.ReadLine()
+		if err != nil {
+			return fmt.Errorf("failed to read stdout: %v", err)
+		}
 
-	go func() {
-		// Combine stdout and stderr
-		slog.Info("stdout and stderr combined")
+		sline := string(line)
 
-		scanner := bufio.NewScanner(io.MultiReader(stdout, stderr))
-		for scanner.Scan() {
-			line := scanner.Text()
+		slog.Info("stdout", "line", sline)
 
-			slog.Info("scanning line", "line", line)
-
-			if strings.Contains(line, "DevTools listening on") {
-				parts := strings.Split(line, "DevTools listening on ")
-				if len(parts) > 1 {
-					wsURLChan <- strings.TrimSpace(parts[1])
-					return
-				}
+		if strings.Contains(sline, "DevTools listening on") {
+			parts := strings.Split(sline, "DevTools listening on ")
+			if len(parts) > 1 {
+				z.debuggerURL = strings.TrimSpace(parts[1])
+				break
 			}
 		}
-		if err := scanner.Err(); err != nil {
-			errChan <- fmt.Errorf("scanning output failed: %v", err)
-		}
-	}()
 
-	// Wait for WebSocket URL or timeout
-	select {
-	case wsURL := <-wsURLChan:
-		z.debuggerURL = strings.TrimSpace(wsURL)
-		break
-	case err := <-errChan:
-		return err
-	case <-timer.C:
-
-		return fmt.Errorf("timeout waiting for chrome to start")
+		slog.Info("stdout", "line", string(line))
 	}
+
+	pp.Println("@debug/url", z.debuggerURL)
 
 	conn, _, err := websocket.DefaultDialer.Dial(z.debuggerURL, nil)
 	if err != nil {
@@ -194,29 +177,113 @@ func (z *ZChromeView) sendGoto(url string) {
 	}
 }
 
+func (z *ZChromeView) receiveEventLoop() {
+
+	for {
+
+		msg := &IPCMessage{}
+
+		err := z.wsConn.ReadJSON(msg)
+		if err != nil {
+			pp.Println("read error", err)
+			return
+		}
+
+		pp.Println("@GOT", msg)
+
+		if msg.Method == "Target.attachedToTarget" {
+			params := msg.Params.(map[string]interface{})
+			z.sessionId = params["sessionId"].(string)
+			break
+		}
+
+	}
+
+}
+
+func (z *ZChromeView) msgId() int64 {
+	z.msgIdCounter = z.msgIdCounter + 1
+	return z.msgIdCounter
+}
+
 func (z *ZChromeView) sendEventLoop() {
 
 	defer z.wsConn.Close()
 
+	err := z.wsConn.WriteJSON(map[string]interface{}{
+		"id":     z.msgId(),
+		"method": "Target.getTargets",
+	})
+	if err != nil {
+		slog.Error("failed to write message", "err", err)
+		return
+	}
+
+	// Read response
+	var resp struct {
+		ID     int `json:"id"`
+		Result struct {
+			TargetInfos []TargetInfo `json:"targetInfos"`
+		} `json:"result"`
+	}
+
+	err = z.wsConn.ReadJSON(&resp)
+	if err != nil {
+		slog.Error("failed to read message", "err", err)
+		return
+	}
+
+	pp.Println("@resp", resp)
+
+	// Find the first page target
+	var pageTarget *TargetInfo
+	for _, target := range resp.Result.TargetInfos {
+		if target.Type == "page" {
+			pageTarget = &target
+			break
+		}
+	}
+
+	if pageTarget == nil {
+		panic("no page target found")
+	}
+
+	z.wsConn.WriteJSON(map[string]interface{}{
+		"id":     z.msgId(),
+		"method": "Target.activateTarget",
+		"params": map[string]interface{}{
+			"targetId": pageTarget.TargetId,
+		},
+	})
+
+	// attachToTarget
+
+	z.wsConn.WriteJSON(map[string]interface{}{
+		"id":     z.msgId(),
+		"method": "Target.attachToTarget",
+		"params": map[string]interface{}{
+			"targetId": pageTarget.TargetId,
+			"flatten":  true,
+		},
+	})
+
+	pp.Println("@pageTarget", pageTarget)
+
+	go z.receiveEventLoop()
+
 	for {
 		msg := <-z.msgChan
 
-		if msg.ID == 0 {
-			msg.ID = z.msgIdCounter
-			z.msgIdCounter++
-		}
+		msg.ID = z.msgId()
+		msg.SessionId = z.sessionId
 
-		msgBytes, err := json.Marshal(msg)
-		if err != nil {
-			slog.Error("failed to marshal message", "err", err)
-			continue
-		}
+		pp.Println("@sendEventLoop", msg)
 
-		err = z.wsConn.WriteMessage(websocket.TextMessage, msgBytes)
+		err := z.wsConn.WriteJSON(msg)
 		if err != nil {
 			slog.Error("failed to write message", "err", err)
-			continue
 		}
+
 	}
 
 }
@@ -241,4 +308,12 @@ func (z *ZChromeView) generateArgs() []string {
 	}
 
 	return args
+}
+
+func (z *ZChromeView) Wait() error {
+	if z.cmd == nil {
+		return fmt.Errorf("command not started")
+	}
+
+	return z.cmd.Wait()
 }

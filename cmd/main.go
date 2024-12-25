@@ -2,11 +2,13 @@ package main
 
 import (
 	"log/slog"
+	"time"
 
 	"github.com/blue-monads/zchromeview"
 )
 
 func main() {
+
 	slog.Info("Hello, ZChromeView!")
 
 	view := zchromeview.New(zchromeview.Options{
@@ -21,6 +23,14 @@ func main() {
 	}
 
 	defer view.Stop()
+
+	time.Sleep(5 * time.Second)
+
+	slog.Info("navigating")
+
+	view.NavigateURL("https://x.com/")
+
+	view.Wait()
 
 	slog.Info("view started")
 
